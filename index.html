@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#15171c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Stocks">
+<title>Stock Watch</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<style>
+:root{--bg:#15171c;--card:#1d2027;--fg:#e8eaed;--muted:#8a9099;--up:#34c27a;--down:#ef5b5b;--line:#2c3039}
+*{box-sizing:border-box}
+html,body{margin:0}
+html{background:var(--bg)}
+body{
+  background:var(--bg);color:var(--fg);
+  font-family:-apple-system,system-ui,"Segoe UI",Roboto,sans-serif;font-variant-numeric:tabular-nums;
+  padding:max(14px,env(safe-area-inset-top)) 16px max(18px,env(safe-area-inset-bottom));
+  max-width:520px;margin:0 auto;-webkit-tap-highlight-color:transparent;
+}
+header{display:flex;align-items:center;justify-content:space-between;margin:4px 2px 10px}
+header h1{font-size:13px;letter-spacing:.08em;color:var(--muted);margin:0;font-weight:600}
+.icon-btn{background:none;border:0;color:var(--muted);font-size:20px;padding:6px 8px;border-radius:8px;cursor:pointer}
+.icon-btn:active{background:var(--card)}
+.card{background:var(--card);border-radius:14px;margin-bottom:10px;overflow:hidden}
+.total{padding:14px 16px}
+.total .top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
+.total .top span:first-child{font-weight:600}
+.total .top span:last-child{font-size:24px;font-weight:600}
+.kv{display:flex;justify-content:space-between;font-size:13px;padding:2px 0}
+.kv span:first-child{color:var(--muted)}
+.row{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer;user-select:none;-webkit-user-select:none}
+.row .name{flex:0 0 auto;min-width:84px}
+.row .sym{font-weight:600;font-size:17px}
+.row .co{font-size:12px;color:var(--muted)}
+.range{flex:1;position:relative;height:4px;background:var(--line);border-radius:2px;min-width:40px}
+.range i{position:absolute;top:-4px;width:12px;height:12px;border-radius:50%;margin-left:-6px;background:var(--muted)}
+.row .px{text-align:right;flex:0 0 auto}
+.row .price{font-weight:600;font-size:17px}
+.row .chg{font-size:12px}
+.up{color:var(--up)}.down{color:var(--down)}.dim{color:var(--muted)}
+.detail{display:none;padding:0 16px 14px;border-top:1px solid var(--line)}
+.card.open .detail{display:block}
+.grid{display:grid;grid-template-columns:1fr 1fr;column-gap:18px;padding-top:10px}
+.grid .full{grid-column:1/-1}
+.inputs{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0 8px;padding-top:12px;border-top:1px solid var(--line)}
+label{font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:4px}
+input{
+  font:inherit;font-size:16px;color:var(--fg);background:var(--bg);border:1px solid var(--line);
+  border-radius:8px;padding:9px 10px;text-align:right;width:100%;
+}
+input:focus{outline:none;border-color:var(--up)}
+input.bad{border-color:var(--down)}
+.err{font-size:12px;color:var(--down);padding:0 16px 12px}
+footer{font-size:12px;color:var(--muted);text-align:center;margin-top:6px}
+#setup{padding:18px 16px}
+#setup h2{font-size:18px;margin:0 0 8px}
+#setup p{font-size:14px;color:var(--muted);line-height:1.45;margin:0 0 12px}
+#setup a{color:var(--up)}
+#setup input{text-align:left;margin-bottom:10px}
+.btn{font:inherit;font-weight:600;font-size:16px;width:100%;padding:11px;border:0;border-radius:10px;background:var(--up);color:#0d1a12;cursor:pointer}
+.btn.ghost{background:none;color:var(--muted);border:1px solid var(--line);margin-top:8px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<header>
+  <h1>WATCHLIST</h1>
+  <div>
+    <button class="icon-btn" id="refresh" aria-label="Refresh">↻</button>
+    <button class="icon-btn" id="settings" aria-label="Settings">⚙</button>
+  </div>
+</header>
+
+<section class="card" id="setup" hidden>
+  <h2>Connect a price feed</h2>
+  <p>Prices come from Finnhub. Make a free account at
+    <a href="https://finnhub.io/register" target="_blank" rel="noopener">finnhub.io</a>,
+    copy your API key from the dashboard, and paste it here. It's saved only on this device.</p>
+  <input id="keyInput" placeholder="Finnhub API key" autocomplete="off" autocapitalize="off" spellcheck="false">
+  <button class="btn" id="saveKey">Save</button>
+  <button class="btn ghost" id="cancelKey">Cancel</button>
+</section>
+
+<section class="card total" id="total" hidden>
+  <div class="top"><span>Portfolio</span><span id="tValue">—</span></div>
+  <div class="kv"><span>Total return</span><span id="tGain">—</span></div>
+  <div class="kv"><span>Today</span><span id="tDay">—</span></div>
+</section>
+
+<main id="list"></main>
+<footer id="status">Loading…</footer>
+
+<script>
+const SYMBOLS = [["SPCX", "SpaceX"], ["TSLA", "Tesla"], ["MSFT", "Microsoft"]];
+const REFRESH_MS = 60_000, METRIC_MS = 6 * 3600_000;
+const API = "https://finnhub.io/api/v1";
+const $ = id => document.getElementById(id);
+
+const store = {
+  get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+let key = store.get("finnhubKey", "");
+const positions = store.get("positions", {});
+const open = new Set(store.get("open", []));
+const metrics = store.get("metrics", {});   // {sym: {hi, lo, at}}
+const quotes = {};
+const errors = {};
+
+const money = v => v == null ? "—" : "$" + v.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const signed = v => (v >= 0 ? "+" : "-") + money(Math.abs(v));
+const pctTxt = v => (v >= 0 ? "+" : "") + v.toFixed(2) + "%";
+const cls = v => v >= 0 ? "up" : "down";
+const range = (lo, hi) => lo == null || hi == null ? "—" : `${lo.toFixed(2)} – ${hi.toFixed(2)}`;
+const num = s => { s = s.trim().replace(/[$,]/g, ""); return s === "" ? null : (isFinite(+s) ? +s : NaN); };
+
+function build() {
+  $("list").innerHTML = SYMBOLS.map(([s, name]) => `
+    <section class="card${open.has(s) ? " open" : ""}" id="c-${s}">
+      <div class="row" data-sym="${s}">
+        <div class="name"><div class="sym">${s}</div><div class="co">${name}</div></div>
+        <div class="range" title="Day range"><i id="dot-${s}" hidden></i></div>
+        <div class="px"><div class="price" id="p-${s}">—</div><div class="chg dim" id="ch-${s}">&nbsp;</div></div>
+      </div>
+      <div class="err" id="e-${s}" hidden></div>
+      <div class="detail">
+        <div class="grid">
+          <div class="kv"><span>Open</span><span id="o-${s}">—</span></div>
+          <div class="kv"><span>Prev close</span><span id="pc-${s}">—</span></div>
+          <div class="kv full"><span>Day range</span><span id="dr-${s}">—</span></div>
+          <div class="kv full"><span>52w range</span><span id="wr-${s}">—</span></div>
+        </div>
+        <div class="inputs">
+          <label>Shares<input inputmode="decimal" id="sh-${s}" data-sym="${s}" data-k="shares"></label>
+          <label>Avg cost<input inputmode="decimal" id="ac-${s}" data-sym="${s}" data-k="cost"></label>
+        </div>
+        <div class="kv"><span>Market value</span><span id="mv-${s}">—</span></div>
+        <div class="kv"><span>Total return</span><span id="tr-${s}">—</span></div>
+        <div class="kv"><span>Today</span><span id="td-${s}">—</span></div>
+      </div>
+    </section>`).join("");
+
+  for (const [s] of SYMBOLS) {
+    const p = positions[s] || {};
+    if (p.shares != null) $("sh-" + s).value = p.shares;
+    if (p.cost != null) $("ac-" + s).value = p.cost;
+  }
+  document.querySelectorAll(".row").forEach(r => r.addEventListener("click", () => {
+    const s = r.dataset.sym;
+    open.has(s) ? open.delete(s) : open.add(s);
+    $("c-" + s).classList.toggle("open", open.has(s));
+    store.set("open", [...open]);
+  }));
+  document.querySelectorAll(".inputs input").forEach(inp => inp.addEventListener("input", () => {
+    const s = inp.dataset.sym, v = num(inp.value);
+    inp.classList.toggle("bad", Number.isNaN(v));
+    if (Number.isNaN(v)) return;
+    positions[s] = {...positions[s], [inp.dataset.k]: v};
+    store.set("positions", positions);
+    renderPosition(s);
+    renderTotal();
+  }));
+}
+
+async function get(path) {
+  const res = await fetch(`${API}${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(key)}`);
+  if (res.status === 401 || res.status === 403) throw new Error("API key rejected");
+  if (res.status === 429) throw new Error("Rate limited — try again in a minute");
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+async function refresh() {
+  if (!key) return showSetup(true);
+  $("status").textContent = "Updating…";
+  await Promise.all(SYMBOLS.map(async ([s]) => {
+    try {
+      const q = await get(`/quote?symbol=${s}`);
+      if (!q.c) throw new Error("No quote for this symbol");
+      quotes[s] = q;
+      delete errors[s];
+      const m = metrics[s];
+      if (!m || Date.now() - m.at > METRIC_MS) {
+        const r = await get(`/stock/metric?symbol=${s}&metric=all`);
+        metrics[s] = {hi: r.metric?.["52WeekHigh"] ?? null, lo: r.metric?.["52WeekLow"] ?? null, at: Date.now()};
+        store.set("metrics", metrics);
+      }
+    } catch (e) {
+      errors[s] = e.message;
+    }
+  }));
+  SYMBOLS.forEach(([s]) => render(s));
+  renderTotal();
+  const failed = Object.keys(errors);
+  $("status").textContent = failed.length
+    ? `⚠ ${failed.join(", ")} failed to update`
+    : `Updated ${new Date().toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})} · ${marketLabel()}`;
+  if (failed.some(s => errors[s] === "API key rejected")) showSetup(true);
+}
+
+function marketLabel() {
+  // US regular session, Mon–Fri 9:30–16:00 ET (no holiday calendar)
+  const et = new Date(new Date().toLocaleString("en-US", {timeZone: "America/New_York"}));
+  const mins = et.getHours() * 60 + et.getMinutes(), wd = et.getDay();
+  return wd >= 1 && wd <= 5 && mins >= 570 && mins < 960 ? "Market open" : "Market closed";
+}
+
+function render(s) {
+  const e = $("e-" + s);
+  e.hidden = !errors[s];
+  e.textContent = errors[s] || "";
+  const q = quotes[s];
+  if (!q) return;
+  $("p-" + s).textContent = money(q.c);
+  const ch = $("ch-" + s);
+  ch.textContent = `${q.d >= 0 ? "+" : ""}${q.d.toFixed(2)} (${pctTxt(q.dp)})`;
+  ch.className = "chg " + cls(q.d);
+  $("o-" + s).textContent = money(q.o);
+  $("pc-" + s).textContent = money(q.pc);
+  $("dr-" + s).textContent = range(q.l, q.h);
+  const m = metrics[s] || {};
+  $("wr-" + s).textContent = range(m.lo, m.hi);
+  const dot = $("dot-" + s);
+  dot.hidden = !(q.h > q.l);
+  dot.style.left = q.h > q.l ? ((q.c - q.l) / (q.h - q.l) * 100) + "%" : "50%";
+  dot.style.background = q.d >= 0 ? "var(--up)" : "var(--down)";
+  renderPosition(s);
+}
+
+function renderPosition(s) {
+  const q = quotes[s], {shares, cost} = positions[s] || {};
+  const set = (id, text, c = "") => { const el = $(id); el.textContent = text; el.className = c; };
+  if (!q || !shares) {
+    ["mv-", "tr-", "td-"].forEach(p => set(p + s, "—"));
+    return;
+  }
+  set("mv-" + s, money(shares * q.c));
+  const day = shares * q.d;
+  set("td-" + s, signed(day), cls(day));
+  if (cost) {
+    const gain = (q.c - cost) * shares;
+    set("tr-" + s, `${signed(gain)} (${pctTxt((q.c / cost - 1) * 100)})`, cls(gain));
+  } else {
+    set("tr-" + s, "enter avg cost", "dim");
+  }
+}
+
+function renderTotal() {
+  const held = SYMBOLS.map(([s]) => [positions[s] || {}, quotes[s]]).filter(([p, q]) => p.shares && q);
+  $("total").hidden = !held.length;
+  if (!held.length) return;
+  const value = held.reduce((a, [p, q]) => a + p.shares * q.c, 0);
+  const day = held.reduce((a, [p, q]) => a + p.shares * q.d, 0);
+  const costed = held.filter(([p]) => p.cost);
+  const basis = costed.reduce((a, [p]) => a + p.shares * p.cost, 0);
+  const gain = costed.reduce((a, [p, q]) => a + p.shares * (q.c - p.cost), 0);
+  $("tValue").textContent = money(value);
+  $("tDay").textContent = `${signed(day)} (${pctTxt(day / (value - day) * 100)})`;
+  $("tDay").className = cls(day);
+  if (basis) {
+    $("tGain").textContent = `${signed(gain)} (${pctTxt(gain / basis * 100)})`;
+    $("tGain").className = cls(gain);
+  } else {
+    $("tGain").textContent = "enter avg cost";
+    $("tGain").className = "dim";
+  }
+}
+
+function showSetup(on) {
+  $("setup").hidden = !on;
+  $("cancelKey").hidden = !key;
+  if (on) $("keyInput").value = key;
+}
+
+$("saveKey").onclick = () => {
+  key = $("keyInput").value.trim();
+  store.set("finnhubKey", key);
+  if (key) { showSetup(false); refresh(); }
+};
+$("cancelKey").onclick = () => showSetup(false);
+$("settings").onclick = () => showSetup($("setup").hidden);
+$("refresh").onclick = refresh;
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+setInterval(() => { if (!document.hidden && key) refresh(); }, REFRESH_MS);
+
+build();
+key ? refresh() : (showSetup(true), $("status").textContent = "Add an API key to start");
+</script>
+</body>
+</html>
