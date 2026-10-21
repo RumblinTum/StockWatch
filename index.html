@@ -56,6 +56,7 @@ input{
 }
 input:focus{outline:none;border-color:var(--up)}
 input.bad{border-color:var(--down)}
+.saved{font-size:12px;min-height:16px;margin:-2px 0 6px;text-align:right}
 .err{font-size:12px;color:var(--down);padding:0 16px 12px}
 footer{font-size:12px;color:var(--muted);text-align:center;margin-top:6px}
 #setup{padding:18px 16px}
@@ -104,7 +105,7 @@ const $ = id => document.getElementById(id);
 
 const store = {
   get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 let key = store.get("finnhubKey", "");
 const positions = store.get("positions", {});
@@ -140,6 +141,7 @@ function build() {
           <label>Shares<input inputmode="decimal" id="sh-${s}" data-sym="${s}" data-k="shares"></label>
           <label>Avg cost<input inputmode="decimal" id="ac-${s}" data-sym="${s}" data-k="cost"></label>
         </div>
+        <div class="saved" id="sv-${s}"></div>
         <div class="kv"><span>Market value</span><span id="mv-${s}">—</span></div>
         <div class="kv"><span>Total return</span><span id="tr-${s}">—</span></div>
         <div class="kv"><span>Today</span><span id="td-${s}">—</span></div>
@@ -162,7 +164,12 @@ function build() {
     inp.classList.toggle("bad", Number.isNaN(v));
     if (Number.isNaN(v)) return;
     positions[s] = {...positions[s], [inp.dataset.k]: v};
-    store.set("positions", positions);
+    const ok = store.set("positions", positions);
+    const sv = $("sv-" + s);
+    sv.textContent = ok ? "✓ Saved on this device" : "⚠ Couldn't save — storage is blocked";
+    sv.className = "saved " + (ok ? "up" : "down");
+    clearTimeout(sv.timer);
+    if (ok) sv.timer = setTimeout(() => { sv.textContent = ""; }, 2000);
     renderPosition(s);
     renderTotal();
   }));
@@ -289,6 +296,8 @@ $("refresh").onclick = refresh;
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 setInterval(() => { if (!document.hidden && key) refresh(); }, REFRESH_MS);
 
+// ask the browser not to evict saved key/positions under storage pressure
+navigator.storage?.persist?.();
 build();
 key ? refresh() : (showSetup(true), $("status").textContent = "Add an API key to start");
 </script>
