@@ -291,6 +291,7 @@ $("saveKey").onclick = () => {
   if (key) { showSetup(false); refresh(); }
 };
 $("cancelKey").onclick = () => showSetup(false);
+$("keyInput").onfocus = e => e.target.select();  // pasting replaces the old key instead of appending
 $("settings").onclick = () => showSetup($("setup").hidden);
 $("refresh").onclick = refresh;
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
