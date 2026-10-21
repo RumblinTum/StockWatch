@@ -282,17 +282,18 @@ function renderTotal() {
 function showSetup(on) {
   $("setup").hidden = !on;
   $("cancelKey").hidden = !key;
-  if (on) $("keyInput").value = key;
+  if (on) $("keyInput").value = "";  // always start empty so a paste can't append to an old key
 }
 
 $("saveKey").onclick = () => {
-  key = $("keyInput").value.trim();
+  const v = $("keyInput").value.trim();
+  if (!v) return;
+  key = v;
   store.set("finnhubKey", key);
-  if (key) { showSetup(false); refresh(); }
+  showSetup(false);
+  refresh();
 };
-$("cancelKey").onclick = () => showSetup(false);
-$("keyInput").onfocus = e => e.target.select();  // pasting replaces the old key instead of appending
-$("settings").onclick = () => showSetup($("setup").hidden);
+$("cancelKey").onclick = () => showSetup(false);$("settings").onclick = () => showSetup($("setup").hidden);
 $("refresh").onclick = refresh;
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 setInterval(() => { if (!document.hidden && key) refresh(); }, REFRESH_MS);
