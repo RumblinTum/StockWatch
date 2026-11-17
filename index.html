@@ -34,6 +34,7 @@ header h1{font-size:13px;letter-spacing:.08em;color:var(--muted);margin:0;font-w
 .total .top span:last-child{font-size:24px;font-weight:600}
 .kv{display:flex;justify-content:space-between;font-size:13px;padding:2px 0}
 .kv span:first-child{color:var(--muted)}
+.note{font-size:12px;padding-top:6px}
 .row{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer;user-select:none;-webkit-user-select:none}
 .row .name{flex:0 0 auto;min-width:84px}
 .row .sym{font-weight:600;font-size:17px}
@@ -92,6 +93,7 @@ footer{font-size:12px;color:var(--muted);text-align:center;margin-top:6px}
   <div class="top"><span>Portfolio</span><span id="tValue">—</span></div>
   <div class="kv"><span>Total return</span><span id="tGain">—</span></div>
   <div class="kv"><span>Today</span><span id="tDay">—</span></div>
+  <div class="note down" id="tNote" hidden></div>
 </section>
 
 <main id="list"></main>
@@ -99,18 +101,45 @@ footer{font-size:12px;color:var(--muted);text-align:center;margin-top:6px}
 
 <script>
 const SYMBOLS = [["SPCX", "SpaceX"], ["TSLA", "Tesla"], ["MSFT", "Microsoft"]];
-const REFRESH_MS = 60_000, METRIC_MS = 6 * 3600_000;
+const REFRESH_MS = 60_000, METRIC_MS = 6 * 3600_000, TIMEOUT_MS = 10_000;
 const API = "https://finnhub.io/api/v1";
 const $ = id => document.getElementById(id);
 
+// this origin is shared with every other github.io project site, so keys are namespaced and versioned
+const NS = "stockwatch:v1:";
 const store = {
-  get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; } },
+  get(k, d) { try { return JSON.parse(localStorage.getItem(NS + k)) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(NS + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
+// one-time copy of the pre-namespace keys; the old ones are left untouched as a fallback
+(function migrate() {
+  try {
+    if (localStorage.getItem(NS + "migrated")) return;
+    for (const k of ["finnhubKey", "positions", "open", "metrics"]) {
+      let old = localStorage.getItem(k);
+      if (old === null || localStorage.getItem(NS + k) !== null) continue;
+      // store.get expects JSON; a key saved as a bare string would otherwise fail to parse and be lost
+      try { JSON.parse(old); } catch { if (k === "finnhubKey") old = JSON.stringify(old); }
+      localStorage.setItem(NS + k, old);
+    }
+    localStorage.setItem(NS + "migrated", "1");
+  } catch {}
+})();
+// stored data is not trusted: anything with the wrong shape is dropped instead of crashing the page
+const obj = v => v && typeof v === "object" && !Array.isArray(v) ? v : {};
+const fin = v => typeof v === "number" && isFinite(v);
+const pick = (v, ok) => Object.fromEntries(Object.entries(obj(v)).map(([k, x]) => [k, ok(obj(x))]).filter(([, x]) => x));
 let key = store.get("finnhubKey", "");
-const positions = store.get("positions", {});
-const open = new Set(store.get("open", []));
-const metrics = store.get("metrics", {});   // {sym: {hi, lo, at}}
+if (typeof key !== "string") key = "";
+const positions = pick(store.get("positions", {}), p => {
+  const r = {};
+  if (fin(p.shares)) r.shares = p.shares;
+  if (fin(p.cost)) r.cost = p.cost;
+  return r;
+});
+const open = new Set([].concat(store.get("open", [])).filter(s => typeof s === "string"));
+const metrics = pick(store.get("metrics", {}), m =>   // {sym: {hi, lo, at}}
+  fin(m.at) ? {hi: fin(m.hi) ? m.hi : null, lo: fin(m.lo) ? m.lo : null, at: m.at} : null);
 const quotes = {};
 const errors = {};
 
@@ -176,38 +205,69 @@ function build() {
 }
 
 async function get(path) {
-  const res = await fetch(`${API}${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(key)}`);
-  if (res.status === 401 || res.status === 403) throw new Error("API key rejected");
-  if (res.status === 429) throw new Error("Rate limited — try again in a minute");
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  const ac = new AbortController(), timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(`${API}${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(key)}`, {signal: ac.signal});
+    if (res.status === 401 || res.status === 403) throw new Error("API key rejected");
+    if (res.status === 429) throw new Error("Rate limited — try again in a minute");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (e) {
+    throw e.name === "AbortError" ? new Error("Timed out — no response in 10s") : e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-async function refresh() {
+let inflight = null, gen = 0, lastOk = null;   // lastOk: time of the last refresh where every symbol updated
+const lastTxt = () => lastOk ? ` · last full update ${lastOk}` : " · no prices loaded yet";
+
+// one refresh at a time: callers that arrive while one is running share it
+function refresh() {
   if (!key) return showSetup(true);
+  if (inflight) return inflight;
+  const p = inflight = doRefresh()
+    .catch(e => { $("status").textContent = `⚠ ${e.message}${lastTxt()}`; })
+    .finally(() => { if (inflight === p) inflight = null; });
+  return p;
+}
+
+async function doRefresh() {
+  const my = ++gen;   // a newer run (key change) makes this one stale; stale results are dropped
   $("status").textContent = "Updating…";
   await Promise.all(SYMBOLS.map(async ([s]) => {
+    let q;
     try {
-      const q = await get(`/quote?symbol=${s}`);
-      if (!q.c) throw new Error("No quote for this symbol");
+      q = await get(`/quote?symbol=${s}`);
+      if (my !== gen) return;
+      if (!q || !fin(q.c) || !q.c) throw new Error("No quote for this symbol");
+      // d/dp can come back null: derive them from prev close, or leave null and show a dash
+      if (!fin(q.d)) q.d = fin(q.pc) && q.pc ? q.c - q.pc : null;
+      if (!fin(q.dp)) q.dp = q.d != null && fin(q.pc) && q.pc ? q.d / q.pc * 100 : null;
       quotes[s] = q;
       delete errors[s];
       const m = metrics[s];
       if (!m || Date.now() - m.at > METRIC_MS) {
         const r = await get(`/stock/metric?symbol=${s}&metric=all`);
-        metrics[s] = {hi: r.metric?.["52WeekHigh"] ?? null, lo: r.metric?.["52WeekLow"] ?? null, at: Date.now()};
+        if (my !== gen) return;
+        const hi = r?.metric?.["52WeekHigh"], lo = r?.metric?.["52WeekLow"];
+        metrics[s] = {hi: fin(hi) ? hi : null, lo: fin(lo) ? lo : null, at: Date.now()};
         store.set("metrics", metrics);
       }
     } catch (e) {
+      if (my !== gen) return;
       errors[s] = e.message;
+      if (quotes[s] && quotes[s] !== q) quotes[s].stale = true;   // price on screen is from an earlier refresh
     }
   }));
+  if (my !== gen) return;
   SYMBOLS.forEach(([s]) => render(s));
   renderTotal();
   const failed = Object.keys(errors);
+  if (!failed.length) lastOk = new Date().toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
   $("status").textContent = failed.length
-    ? `⚠ ${failed.join(", ")} failed to update`
-    : `Updated ${new Date().toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})} · ${marketLabel()}`;
+    ? `⚠ ${failed.join(", ")} failed to update${lastTxt()}`
+    : `Updated ${lastOk} · ${marketLabel()}`;
   if (failed.some(s => errors[s] === "API key rejected")) showSetup(true);
 }
 
@@ -226,8 +286,8 @@ function render(s) {
   if (!q) return;
   $("p-" + s).textContent = money(q.c);
   const ch = $("ch-" + s);
-  ch.textContent = `${q.d >= 0 ? "+" : ""}${q.d.toFixed(2)} (${pctTxt(q.dp)})`;
-  ch.className = "chg " + cls(q.d);
+  ch.textContent = q.d == null ? "—" : `${q.d >= 0 ? "+" : ""}${q.d.toFixed(2)}${q.dp == null ? "" : ` (${pctTxt(q.dp)})`}`;
+  ch.className = "chg " + (q.d == null ? "dim" : cls(q.d));
   $("o-" + s).textContent = money(q.o);
   $("pc-" + s).textContent = money(q.pc);
   $("dr-" + s).textContent = range(q.l, q.h);
@@ -236,7 +296,7 @@ function render(s) {
   const dot = $("dot-" + s);
   dot.hidden = !(q.h > q.l);
   dot.style.left = q.h > q.l ? ((q.c - q.l) / (q.h - q.l) * 100) + "%" : "50%";
-  dot.style.background = q.d >= 0 ? "var(--up)" : "var(--down)";
+  dot.style.background = q.d == null ? "" : q.d >= 0 ? "var(--up)" : "var(--down)";
   renderPosition(s);
 }
 
@@ -249,7 +309,7 @@ function renderPosition(s) {
   }
   set("mv-" + s, money(shares * q.c));
   const day = shares * q.d;
-  set("td-" + s, signed(day), cls(day));
+  q.d == null ? set("td-" + s, "—") : set("td-" + s, signed(day), cls(day));
   if (cost) {
     const gain = (q.c - cost) * shares;
     set("tr-" + s, `${signed(gain)} (${pctTxt((q.c / cost - 1) * 100)})`, cls(gain));
@@ -262,14 +322,22 @@ function renderTotal() {
   const held = SYMBOLS.map(([s]) => [positions[s] || {}, quotes[s]]).filter(([p, q]) => p.shares && q);
   $("total").hidden = !held.length;
   if (!held.length) return;
+  // say so when the total leaves a holding out or is built on a price that failed to refresh
+  const mine = SYMBOLS.map(([s]) => s).filter(s => positions[s]?.shares);
+  const missing = mine.filter(s => !quotes[s]), stale = mine.filter(s => quotes[s]?.stale);
+  const note = [missing.length && `excludes ${missing.join(", ")} (no price)`, stale.length && `old price for ${stale.join(", ")}`].filter(Boolean).join(" · ");
+  $("tNote").textContent = note && `⚠ Partial or stale: ${note}`;
+  $("tNote").hidden = !note;
+  $("tValue").className = note ? "dim" : "";
   const value = held.reduce((a, [p, q]) => a + p.shares * q.c, 0);
   const day = held.reduce((a, [p, q]) => a + p.shares * q.d, 0);
   const costed = held.filter(([p]) => p.cost);
   const basis = costed.reduce((a, [p]) => a + p.shares * p.cost, 0);
   const gain = costed.reduce((a, [p, q]) => a + p.shares * (q.c - p.cost), 0);
   $("tValue").textContent = money(value);
-  $("tDay").textContent = `${signed(day)} (${pctTxt(day / (value - day) * 100)})`;
-  $("tDay").className = cls(day);
+  const noDay = held.some(([, q]) => q.d == null);   // a null change would count as 0 and understate the day
+  $("tDay").textContent = noDay ? "—" : `${signed(day)} (${pctTxt(day / (value - day) * 100)})`;
+  $("tDay").className = noDay ? "dim" : cls(day);
   if (basis) {
     $("tGain").textContent = `${signed(gain)} (${pctTxt(gain / basis * 100)})`;
     $("tGain").className = cls(gain);
@@ -280,9 +348,10 @@ function renderTotal() {
 }
 
 function showSetup(on) {
+  // start empty so a paste can't append to an old key, but only when opening: a failed refresh must not wipe a half-typed key
+  if (on && $("setup").hidden) $("keyInput").value = "";
   $("setup").hidden = !on;
   $("cancelKey").hidden = !key;
-  if (on) $("keyInput").value = "";  // always start empty so a paste can't append to an old key
 }
 
 $("saveKey").onclick = () => {
@@ -291,6 +360,7 @@ $("saveKey").onclick = () => {
   key = v;
   store.set("finnhubKey", key);
   showSetup(false);
+  gen++; inflight = null;   // abandon any run that is still using the old key
   refresh();
 };
 $("cancelKey").onclick = () => showSetup(false);$("settings").onclick = () => showSetup($("setup").hidden);
